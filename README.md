@@ -1,4 +1,4 @@
-﻿# RockTube Downloader
+# RockTube Downloader
 
 **RockTube Downloader 2.2.1** is a Windows desktop video downloader built by Mr.Sulim.Inc.
 
@@ -24,7 +24,7 @@ Review the build configuration before producing a new release. Generated executa
 
 ## Version
 
-Current release candidate: **2.2.1**
+Current release: **2.2.1**
 
 ## Publisher
 
