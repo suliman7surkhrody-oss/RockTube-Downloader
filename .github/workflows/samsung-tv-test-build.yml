@@ -41,15 +41,19 @@ jobs:
           New-Item -ItemType Directory -Force -Path "ffmpeg" | Out-Null
           Copy-Item $ffmpeg.FullName "ffmpeg\ffmpeg.exe"
           Copy-Item $ffprobe.FullName "ffmpeg\ffprobe.exe"
+          # Bundle DLL dependencies shipped beside the FFmpeg executable.
+          Get-ChildItem $ffmpeg.Directory.FullName -Filter "*.dll" | Copy-Item -Destination "ffmpeg" -Force
           & "ffmpeg\ffmpeg.exe" -hide_banner -encoders | Select-String "libx264"
           if ($LASTEXITCODE -ne 0) { throw "FFmpeg encoder verification failed." }
           & "ffmpeg\ffmpeg.exe" -hide_banner -encoders | Select-String "aac"
+          & "ffmpeg\ffmpeg.exe" -hide_banner -version
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg failed to launch with its bundled dependencies." }
 
       - name: Build portable application folder
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          python -m PyInstaller --noconfirm --clean --onedir --windowed --name "RockTube Downloader" --icon "rocktube.ico" --add-data "rocktube_logo.png;." --add-binary "ffmpeg\ffmpeg.exe;ffmpeg" --add-binary "ffmpeg\ffprobe.exe;ffmpeg" main.py
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name "RockTube Downloader" --icon "rocktube.ico" --add-data "rocktube_logo.png;." --add-data "ffmpeg;ffmpeg" main.py
           if (-not (Test-Path "dist\RockTube Downloader\RockTube Downloader.exe")) { throw "Portable application executable was not created." }
           Compress-Archive -Path "dist\RockTube Downloader" -DestinationPath "RockTube-Samsung-TV-Test.zip" -Force
 
