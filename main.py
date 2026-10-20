@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw
 # ============================================================
 
 APP_NAME = "RockTube Downloader"
-APP_VERSION = "2.2.2-tv-test"
+APP_VERSION = "2.2.3-tv-test"
 DEVELOPER = "Mr.Sulim.Inc"
 
 # ------------------------------------------------------------
@@ -200,12 +200,18 @@ remaining_label = None
 
 download_button = None
 cancel_button = None
-queue_button = None
-queue_label = None
 download_queue = []
+download_items = []
+current_download_item = None
+download_item_counter = 0
+downloads_button = None
+downloads_input = None
+downloads_list_frame = None
+downloads_summary_label = None
 
 home_button = None
 history_button = None
+downloads_button = None
 settings_button = None
 about_button = None
 
@@ -409,6 +415,7 @@ def set_active_button(active):
     buttons = [
         home_button,
         history_button,
+        downloads_button,
         settings_button,
         about_button
     ]
@@ -584,37 +591,9 @@ def show_home():
         fill="x"
     )
 
-    global queue_button
-    global queue_label
-
-    queue_button = ctk.CTkButton(
-        url_card,
-        text="ADD URL TO DOWNLOAD QUEUE",
-        height=38,
-        corner_radius=8,
-        fg_color="#292929",
-        hover_color="#383838",
-        font=ctk.CTkFont(size=12, weight="bold"),
-        command=queue_current_url
-    )
-    queue_button.pack(
-        padx=20,
-        pady=(0, 8),
-        fill="x"
-    )
-
-    queue_label = ctk.CTkLabel(
-        url_card,
-        text="Queue: 0 videos",
-        text_color=MUTED,
-        font=ctk.CTkFont(size=11)
-    )
-    queue_label.pack(
-        padx=20,
-        pady=(0, 16),
-        anchor="w"
-    )
-
+    # Downloads are managed in the dedicated Downloads section.
+    # --------------------------------------------------------
+    
     # --------------------------------------------------------
     # VIDEO INFORMATION
     # --------------------------------------------------------
@@ -1411,164 +1390,138 @@ def choose_folder():
 def progress_hook(data):
 
     if download_cancelled:
+        raise yt_dlp.utils.DownloadCancelled("Download cancelled by user")
 
-        raise yt_dlp.utils.DownloadCancelled(
-            "Download cancelled by user"
-        )
+    if data.get("status") == "downloading":
+        downloaded = data.get("downloaded_bytes", 0)
+        total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
+        speed = data.get("speed")
+        eta = data.get("eta")
+        percent = downloaded / total if total else 0
 
-    if data["status"] == "downloading":
+        app.after(0, lambda p=percent, d=downloaded, t=total, sp=speed, e=eta:
+                  update_progress(p, d, t, sp, e))
+        item = current_download_item
+        if item is not None:
+            item["progress"] = percent
+            item["status"] = "Downloading"
+            app.after(0, refresh_downloads_view)
 
-        downloaded = data.get(
-            "downloaded_bytes",
-            0
-        )
+    elif data.get("status") == "finished":
+        app.after(0, lambda: update_progress(
+            1, data.get("downloaded_bytes", 0), data.get("total_bytes", 0), None, 0
+        ))
+        item = current_download_item
+        if item is not None:
+            item["progress"] = 1
+            item["status"] = "Converting for TV"
+            app.after(0, refresh_downloads_view)
 
-        total = (
-            data.get("total_bytes")
-            or data.get("total_bytes_estimate")
-            or 0
-        )
 
-        speed = data.get(
-            "speed"
-        )
+def update_progress(percent, downloaded, total, speed, eta):
 
-        eta = data.get(
-            "eta"
-        )
+    if progress_bar is not None:
+        progress_bar.set(max(0, min(1, percent)))
+        percent_label.configure(text=f"{percent * 100:.1f}%")
 
         if total:
-            percent = downloaded / total
-        else:
-            percent = 0
-
-        app.after(
-            0,
-            lambda: update_progress(
-                percent,
-                downloaded,
-                total,
-                speed,
-                eta
+            status_label.configure(
+                text=f"{format_bytes(downloaded)} / {format_bytes(total)}"
             )
-        )
-
-    elif data["status"] == "finished":
-
-        app.after(
-            0,
-            lambda: update_progress(
-                1,
-                data.get(
-                    "downloaded_bytes",
-                    0
-                ),
-                data.get(
-                    "total_bytes",
-                    0
-                ),
-                None,
-                0
-            )
-        )
-
-
-def update_progress(
-    percent,
-    downloaded,
-    total,
-    speed,
-    eta
-):
-
-    if progress_bar is None:
-        return
-
-    progress_bar.set(
-        max(
-            0,
-            min(
-                1,
-                percent
-            )
-        )
-    )
-
-    percent_label.configure(
-        text=f"{percent * 100:.1f}%"
-    )
-
-    if total:
-
-        status_label.configure(
-            text=(
-                f"{format_bytes(downloaded)} / "
-                f"{format_bytes(total)}"
-            )
-        )
-
-    if speed:
 
         speed_label.configure(
-            text=(
-                f"Speed: "
-                f"{format_bytes(speed)}/s"
-            )
+            text=f"Speed: {format_bytes(speed)}/s" if speed else "Speed: --"
         )
+        remaining_label.configure(text=f"Remaining: {format_time(eta)}")
 
-    else:
-
-        speed_label.configure(
-            text="Speed: --"
-        )
-
-    remaining_label.configure(
-        text=(
-            f"Remaining: "
-            f"{format_time(eta)}"
-        )
-    )
+    item = current_download_item
+    if item is not None:
+        item["progress"] = percent
+        app.after(0, refresh_downloads_view)
 
 
 # ============================================================
 # DOWNLOAD
 # ============================================================
 
-def queue_current_url():
-    """Add the URL field to the sequential download queue."""
-    url = url_entry.get().strip() if url_entry is not None else ""
+def _new_download_item(url):
+    global download_item_counter
+    url = url.strip()
     if not url:
-        messagebox.showwarning("Missing URL", "Paste a video URL first.")
+        return None
+    # Keep separate entries even if a user intentionally queues the same URL twice.
+    download_item_counter += 1
+    item = {
+        "id": download_item_counter,
+        "url": url,
+        "title": url,
+        "status": "Waiting",
+        "progress": 0.0,
+        "error": "",
+        "path": "",
+    }
+    download_items.append(item)
+    download_queue.append(item)
+    return item
+
+
+def add_download_urls():
+    """Add one or many URLs (one per line) to the persistent visible download list."""
+    if downloads_input is None:
         return
-    if url not in download_queue:
-        download_queue.append(url)
-    if queue_label is not None:
-        queue_label.configure(text=f"Queue: {len(download_queue)} video(s) waiting")
-    status_label.configure(text=f"Added to queue ({len(download_queue)} waiting)", text_color=GREEN)
+    raw = downloads_input.get("1.0", "end").strip()
+    urls = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not urls:
+        messagebox.showwarning("No URLs", "Paste one or more video URLs, one per line.")
+        return
+
+    added = 0
+    for url in urls:
+        if not url.lower().startswith(("https://", "http://")):
+            continue
+        _new_download_item(url)
+        added += 1
+
+    downloads_input.delete("1.0", "end")
+    refresh_downloads_view()
+    if added == 0:
+        messagebox.showwarning("No valid URLs", "Please enter valid http:// or https:// video links.")
+        return
+    if not download_running:
+        status_label.configure(text=f"Added {added} video(s) to Downloads.", text_color=GREEN)
+
+
+def add_current_video_to_downloads():
+    """The Home Download button adds the analyzed video to Downloads and starts the batch."""
+    if not video_info:
+        messagebox.showwarning("No Video", "Please analyze a video first.")
+        return
+    url = video_info.get("webpage_url") or video_info.get("original_url")
+    if not url:
+        messagebox.showwarning("Missing URL", "The analyzed video has no downloadable URL.")
+        return
+    item = _new_download_item(url)
+    if item:
+        refresh_downloads_view()
+        start_downloads()
 
 
 def download_video():
+    # Preserve the original Home action: click Download Video to start the analyzed video.
+    add_current_video_to_downloads()
 
-    global download_running
-    global download_cancelled
-    global download_queue
+
+def start_downloads():
+    global download_running, download_cancelled, download_queue
 
     if download_running:
-        status_label.configure(text="Downloads are already running. Add more URLs to the queue above.", text_color=RED)
+        if status_label is not None:
+            status_label.configure(text="Downloads are already running. New items will run next.", text_color=GREEN)
         return
 
-    urls = []
-    if video_info:
-        current_url = video_info.get("webpage_url") or video_info.get("original_url")
-        if current_url:
-            urls.append(current_url)
-
-    for queued_url in download_queue:
-        if queued_url not in urls:
-            urls.append(queued_url)
-
-    if not urls:
-        messagebox.showwarning("No Videos", "Analyze a video or add one or more URLs to the download queue first.")
+    waiting = [item for item in download_items if item["status"] == "Waiting"]
+    if not waiting:
+        messagebox.showinfo("Downloads", "There are no waiting videos. Add URLs first.")
         return
 
     if not os.path.isdir(download_folder):
@@ -1578,62 +1531,52 @@ def download_video():
             messagebox.showerror("Folder Error", str(e))
             return
 
-    download_queue = []
-    if queue_label is not None:
-        queue_label.configure(text="Queue: 0 videos waiting")
-
+    download_queue = [item for item in download_items if item["status"] == "Waiting"]
     download_cancelled = False
     download_running = True
 
-    download_button.configure(state="disabled")
-    cancel_button.configure(state="normal")
-    status_label.configure(text=f"Preparing {len(urls)} video(s)...", text_color=RED)
-    progress_bar.set(0)
-    percent_label.configure(text="0%")
-    speed_label.configure(text="Speed: --")
-    remaining_label.configure(text="Remaining: --:--")
+    if download_button is not None:
+        download_button.configure(state="normal")
+    if cancel_button is not None:
+        cancel_button.configure(state="normal")
+    if status_label is not None:
+        status_label.configure(text=f"Preparing {len(download_queue)} video(s)...", text_color=RED)
+    if progress_bar is not None:
+        progress_bar.set(0)
+        percent_label.configure(text="0%")
+        speed_label.configure(text="Speed: --")
+        remaining_label.configure(text="Remaining: --:--")
 
-    quality = quality_combo.get()
+    quality = quality_combo.get() if quality_combo is not None else settings.get("quality", "Best Available")
     settings["quality"] = quality
     save_json(SETTINGS_FILE, settings)
+    refresh_downloads_view()
 
-    threading.Thread(
-        target=download_worker,
-        args=(quality, urls),
-        daemon=True
-    ).start()
+    threading.Thread(target=download_worker, args=(quality,), daemon=True).start()
 
 
-def download_worker(quality, urls):
+def download_worker(quality):
 
-    global current_ydl
-    global download_running
-    global download_cancelled
+    global current_ydl, download_running, download_cancelled, current_download_item
 
     completed = []
     failures = []
 
-    # Include URLs added while the current batch is running.
-    pending = list(urls)
-
-    def set_status(message):
-        app.after(0, lambda text=message: status_label.configure(text=text, text_color=RED))
-
-    while pending or download_queue:
-        if download_cancelled:
+    while not download_cancelled:
+        # Pick up new items added from the Downloads page while the current file is active.
+        item = next((entry for entry in download_items if entry["status"] == "Waiting"), None)
+        if item is None:
             break
 
-        if pending:
-            url = pending.pop(0)
-        else:
-            # URLs queued while the current batch was running are processed next.
-            url = download_queue.pop(0)
-            app.after(0, lambda: queue_label.configure(
-                text=f"Queue: {len(download_queue)} video(s) waiting"
-            ))
+        current_download_item = item
+        item["status"] = "Downloading"
+        item["progress"] = 0.0
+        item["error"] = ""
+        app.after(0, refresh_downloads_view)
 
+        url = item["url"]
         try:
-            set_status(f"Downloading {len(completed) + len(failures) + 1} of the batch...")
+            app.after(0, lambda it=item: it.update(status="Analyzing"))
             output_template = os.path.join(download_folder, "%(title)s.%(ext)s")
 
             if quality == "Best Available":
@@ -1641,14 +1584,14 @@ def download_worker(quality, urls):
             else:
                 try:
                     height = int(quality.replace("p", ""))
-                    format_string = (
-                        f"bestvideo[height<={height}]+bestaudio/"
-                        f"best[height<={height}]"
-                    )
+                    format_string = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
                 except Exception:
                     format_string = "bestvideo+bestaudio/best"
 
             ffmpeg_exe = os.path.join(FFMPEG_DIR, "ffmpeg.exe")
+            if not os.path.isfile(ffmpeg_exe):
+                raise FileNotFoundError("Bundled FFmpeg is missing. Rebuild the test package.")
+
             options = {
                 "format": format_string,
                 "outtmpl": output_template,
@@ -1658,9 +1601,8 @@ def download_worker(quality, urls):
                 "no_warnings": True,
                 "progress_hooks": [progress_hook],
                 "windowsfilenames": True,
+                "ffmpeg_location": FFMPEG_DIR,
             }
-            if os.path.isfile(ffmpeg_exe):
-                options["ffmpeg_location"] = FFMPEG_DIR
 
             with yt_dlp.YoutubeDL(options) as ydl:
                 current_ydl = ydl
@@ -1668,27 +1610,23 @@ def download_worker(quality, urls):
                 prepared_path = ydl.prepare_filename(info)
 
             base_path = os.path.splitext(prepared_path)[0]
-            candidates = [base_path + ".mp4", info.get("_filename")]
+            candidates = [base_path + ".mp4", info.get("_filename"), prepared_path]
             for requested in info.get("requested_downloads", []) or []:
                 if isinstance(requested, dict):
                     candidates.extend([requested.get("filepath"), requested.get("filename")])
-            candidates.append(prepared_path)
-
             final_path = next(
                 (os.path.abspath(path) for path in candidates if path and os.path.isfile(path)),
-                prepared_path
+                None
             )
+            if not final_path:
+                raise RuntimeError("Download completed, but the output file could not be located.")
 
-            if not os.path.isfile(ffmpeg_exe):
-                raise FileNotFoundError(
-                    "The bundled FFmpeg encoder is missing. This test build needs to be rebuilt."
-                )
+            item["title"] = info.get("title", url)
+            item["status"] = "Converting for TV"
+            app.after(0, refresh_downloads_view)
 
-            compatible_path = os.path.splitext(final_path)[0] + ".tv-compatible.mp4"
             temp_path = os.path.splitext(final_path)[0] + ".tv-compatible.tmp.mp4"
-            set_status("Download reached 100% — converting for Samsung TV compatibility...")
-            if progress_bar is not None:
-                app.after(0, lambda: percent_label.configure(text="Converting for TV…"))
+            compatible_path = os.path.splitext(final_path)[0] + ".tv-compatible.mp4"
             try:
                 command = [
                     ffmpeg_exe, "-hide_banner", "-y", "-i", final_path,
@@ -1708,15 +1646,9 @@ def download_worker(quality, urls):
                     startupinfo.wShowWindow = 0
                     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 result = subprocess.run(
-                    command,
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    startupinfo=startupinfo,
-                    creationflags=creationflags,
+                    command, check=True, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                    errors="replace", startupinfo=startupinfo, creationflags=creationflags
                 )
                 if os.path.splitext(final_path)[1].lower() == ".mp4":
                     os.replace(temp_path, final_path)
@@ -1725,7 +1657,7 @@ def download_worker(quality, urls):
                     final_path = compatible_path
             except subprocess.CalledProcessError as exc:
                 details = (exc.stderr or str(exc)).strip()
-                raise RuntimeError("FFmpeg could not convert this video. " + details[-1800:])
+                raise RuntimeError("TV conversion failed: " + details[-1500:])
             finally:
                 if os.path.exists(temp_path):
                     try:
@@ -1734,35 +1666,48 @@ def download_worker(quality, urls):
                         pass
 
             if not os.path.isfile(final_path) or os.path.getsize(final_path) <= 0:
-                raise RuntimeError("Conversion finished without a valid output file.")
+                raise RuntimeError("TV conversion did not produce a valid output file.")
 
+            item["path"] = final_path
+            item["progress"] = 1.0
+            item["status"] = "Completed"
+            item["error"] = ""
             completed.append((info, final_path, quality))
-            app.after(0, lambda title=info.get("title", "Video"): status_label.configure(
-                text=f"TV-compatible video ready: {title}", text_color=GREEN
-            ))
-
-        except Exception as e:
-            failures.append((url, get_friendly_error(e)))
+        except Exception as exc:
+            error = get_friendly_error(exc)
+            item["status"] = "Failed"
+            item["error"] = error
+            failures.append((url, error))
         finally:
             current_ydl = None
+            current_download_item = None
+            app.after(0, refresh_downloads_view)
+
+    if download_cancelled:
+        for item in download_items:
+            if item["status"] in ("Waiting", "Downloading", "Analyzing", "Converting for TV"):
+                item["status"] = "Cancelled" if item is not current_download_item else "Waiting"
 
     app.after(0, lambda: batch_download_finished(completed, failures, download_cancelled))
 
 
 def batch_download_finished(completed, failures, was_cancelled=False):
-    """Restore controls after the entire sequential batch has finished."""
-    global download_running
-    global download_cancelled
+    """Finish a batch without hiding the per-video status list."""
+    global download_running, download_cancelled, current_download_item
 
     download_running = False
     download_cancelled = False
+    current_download_item = None
 
-    download_button.configure(state="normal")
-    cancel_button.configure(state="disabled")
-    progress_bar.set(1 if completed else 0)
-    percent_label.configure(text="100%" if completed else "0%")
-    speed_label.configure(text="Complete" if completed else "Speed: --")
-    remaining_label.configure(text="Remaining: 00:00" if completed else "Remaining: --:--")
+    if download_button is not None:
+        download_button.configure(state="normal")
+    if cancel_button is not None:
+        cancel_button.configure(state="disabled")
+    if progress_bar is not None:
+        progress_bar.set(1 if completed and not failures else 0)
+        percent_label.configure(text="100%" if completed and not failures else "0%")
+        speed_label.configure(text="Complete" if completed and not failures else "Speed: --")
+        remaining_label.configure(text="Remaining: 00:00" if completed and not failures else "Remaining: --:--")
 
     for info, final_path, quality in completed:
         title = info.get("title", "Unknown title")
@@ -1781,27 +1726,20 @@ def batch_download_finished(completed, failures, was_cancelled=False):
     del history[100:]
     save_json(HISTORY_FILE, history)
 
-    if was_cancelled:
-        status_label.configure(text=f"Cancelled. {len(completed)} video(s) completed.", text_color=RED)
-    elif failures:
-        status_label.configure(
-            text=f"Finished with {len(completed)} completed and {len(failures)} failed.",
-            text_color=RED if not completed else GREEN
-        )
-    else:
-        status_label.configure(text=f"All done — {len(completed)} TV-compatible video(s) ready.", text_color=GREEN)
+    if status_label is not None:
+        if was_cancelled:
+            status_label.configure(text=f"Cancelled. {len(completed)} video(s) completed.", text_color=RED)
+        elif failures:
+            status_label.configure(text=f"Finished: {len(completed)} completed, {len(failures)} failed.", text_color=RED if not completed else GREEN)
+        else:
+            status_label.configure(text=f"All done — {len(completed)} TV-compatible video(s) ready.", text_color=GREEN)
 
-    summary = []
-    if completed:
-        summary.append(f"Successfully converted: {len(completed)}")
-    if failures:
-        summary.append(f"Failed: {len(failures)}")
-        summary.extend(f"• {url}\n  {error[:300]}" for url, error in failures[:3])
-    if was_cancelled:
-        summary.append("The batch was cancelled.")
-
-    if completed or failures or was_cancelled:
-        messagebox.showinfo("RockTube Download Results", "\n\n".join(summary) or "Batch finished.")
+    refresh_downloads_view()
+    if completed or failures:
+        summary = [f"Completed: {len(completed)}", f"Failed: {len(failures)}"]
+        if failures:
+            summary.extend(f"• {url}\n  {error[:240]}" for url, error in failures[:3])
+        messagebox.showinfo("RockTube Downloads", "\n\n".join(summary))
 
 
 # ============================================================
@@ -2002,6 +1940,153 @@ def download_failed(error):
         "Download Error",
         error
     )
+
+
+# ============================================================
+# DOWNLOADS MANAGER
+# ============================================================
+
+def refresh_downloads_view():
+    """Refresh visible per-video status rows without clearing the download data."""
+    if downloads_list_frame is None or not downloads_list_frame.winfo_exists():
+        return
+    for widget in downloads_list_frame.winfo_children():
+        widget.destroy()
+
+    waiting = sum(1 for item in download_items if item["status"] == "Waiting")
+    active = sum(1 for item in download_items if item["status"] in ("Analyzing", "Downloading", "Converting for TV"))
+    completed = sum(1 for item in download_items if item["status"] == "Completed")
+    failed = sum(1 for item in download_items if item["status"] == "Failed")
+    if downloads_summary_label is not None and downloads_summary_label.winfo_exists():
+        downloads_summary_label.configure(
+            text=f"Total {len(download_items)}  •  Waiting {waiting}  •  Active {active}  •  Completed {completed}  •  Failed {failed}"
+        )
+
+    if not download_items:
+        ctk.CTkLabel(
+            downloads_list_frame,
+            text="Your videos will appear here. Add one URL per line, or use Download Video on Home.",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=13),
+            wraplength=760
+        ).pack(fill="x", padx=15, pady=24)
+        return
+
+    for item in download_items:
+        row = ctk.CTkFrame(
+            downloads_list_frame, fg_color=CARD, corner_radius=10,
+            border_width=1, border_color=BORDER
+        )
+        row.pack(fill="x", padx=4, pady=5)
+
+        info = ctk.CTkFrame(row, fg_color="transparent")
+        info.pack(side="left", fill="x", expand=True, padx=14, pady=10)
+
+        ctk.CTkLabel(
+            info, text=item.get("title") or item["url"],
+            text_color=TEXT, font=ctk.CTkFont(size=13, weight="bold"),
+            anchor="w", justify="left", wraplength=620
+        ).pack(fill="x")
+
+        status = item.get("status", "Waiting")
+        pct = int(float(item.get("progress", 0) or 0) * 100)
+        detail = status
+        if status in ("Downloading", "Converting for TV"):
+            detail += f"  •  {pct}%"
+        if item.get("error"):
+            detail += "  •  " + item["error"][:160]
+        ctk.CTkLabel(
+            info, text=detail, text_color=GREEN if status == "Completed" else (RED if status == "Failed" else MUTED),
+            font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=620
+        ).pack(fill="x", pady=(4, 0))
+
+        if status in ("Waiting", "Failed", "Cancelled") and not download_running:
+            ctk.CTkButton(
+                row, text="REMOVE", width=78, height=32, fg_color="#292929",
+                hover_color=RED, command=lambda target=item: remove_download_item(target)
+            ).pack(side="right", padx=12, pady=10)
+        elif status == "Completed" and item.get("path") and os.path.isfile(item["path"]):
+            ctk.CTkButton(
+                row, text="OPEN", width=70, height=32, fg_color=RED,
+                hover_color=RED_HOVER, command=lambda path=item["path"]: open_path(path)
+            ).pack(side="right", padx=12, pady=10)
+
+
+def remove_download_item(item):
+    if download_running:
+        return
+    if item in download_items:
+        download_items.remove(item)
+    if item in download_queue:
+        download_queue.remove(item)
+    refresh_downloads_view()
+
+
+def clear_finished_downloads():
+    if download_running:
+        messagebox.showinfo("Downloads", "Wait until the active batch finishes before clearing completed items.")
+        return
+    download_items[:] = [item for item in download_items if item["status"] not in ("Completed", "Failed", "Cancelled")]
+    refresh_downloads_view()
+
+
+def show_downloads():
+    global downloads_input, downloads_list_frame, downloads_summary_label
+
+    clear_content()
+    set_active_button(downloads_button)
+
+    header = ctk.CTkFrame(content_frame, fg_color="transparent")
+    header.pack(fill="x", padx=30, pady=(25, 8))
+    ctk.CTkLabel(
+        header, text="DOWNLOADS", font=ctk.CTkFont(size=28, weight="bold"),
+        text_color=TEXT
+    ).pack(side="left")
+    ctk.CTkButton(
+        header, text="CLEAR FINISHED", width=130, height=36,
+        fg_color="#292929", hover_color=RED, command=clear_finished_downloads
+    ).pack(side="right")
+
+    add_card = ctk.CTkFrame(
+        content_frame, fg_color=CARD, corner_radius=12,
+        border_width=1, border_color=BORDER
+    )
+    add_card.pack(fill="x", padx=30, pady=(6, 10))
+    ctk.CTkLabel(
+        add_card, text="ADD VIDEO URLS  (one URL per line)",
+        text_color=MUTED, font=ctk.CTkFont(size=11, weight="bold")
+    ).pack(anchor="w", padx=16, pady=(13, 5))
+
+    downloads_input = ctk.CTkTextbox(
+        add_card, height=78, corner_radius=8, fg_color="#0B0B0B",
+        border_color="#292929", border_width=1
+    )
+    downloads_input.pack(fill="x", padx=16, pady=(0, 10))
+    action_row = ctk.CTkFrame(add_card, fg_color="transparent")
+    action_row.pack(fill="x", padx=16, pady=(0, 14))
+    ctk.CTkButton(
+        action_row, text="ADD TO DOWNLOADS", height=38, fg_color="#292929",
+        hover_color="#383838", command=add_download_urls
+    ).pack(side="left")
+    ctk.CTkButton(
+        action_row, text="START DOWNLOADS", height=38, fg_color=RED,
+        hover_color=RED_HOVER, command=start_downloads
+    ).pack(side="left", padx=(8, 0))
+    ctk.CTkButton(
+        action_row, text="CANCEL ACTIVE", height=38, fg_color="#292929",
+        hover_color=RED, command=cancel_download
+    ).pack(side="left", padx=(8, 0))
+
+    downloads_summary_label = ctk.CTkLabel(
+        content_frame, text="", text_color=MUTED, font=ctk.CTkFont(size=12)
+    )
+    downloads_summary_label.pack(anchor="w", padx=34, pady=(4, 5))
+
+    downloads_list_frame = ctk.CTkScrollableFrame(
+        content_frame, fg_color="transparent"
+    )
+    downloads_list_frame.pack(fill="both", expand=True, padx=30, pady=(0, 20))
+    refresh_downloads_view()
 
 
 # ============================================================
@@ -2645,6 +2730,7 @@ def create_app():
     global content_frame
     global home_button
     global history_button
+    global downloads_button
     global settings_button
     global about_button
     global app_icon_image
@@ -2803,6 +2889,12 @@ def create_app():
         sidebar,
         "▣   HISTORY",
         show_history
+    )
+
+    downloads_button = sidebar_button(
+        sidebar,
+        "⇩   DOWNLOADS",
+        show_downloads
     )
 
     settings_button = sidebar_button(
