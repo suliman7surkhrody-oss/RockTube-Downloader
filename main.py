@@ -1680,6 +1680,40 @@ def download_worker(quality):
             ),
             prepared_path
         )
+
+        # Convert completed downloads to a Samsung-friendly MP4:
+        # H.264 video, AAC-LC-compatible stereo audio, and fast-start metadata.
+        ffmpeg_exe = os.path.join(FFMPEG_DIR, "ffmpeg.exe")
+        if not os.path.isfile(ffmpeg_exe):
+            raise FileNotFoundError("Bundled FFmpeg is missing; cannot create TV-compatible video.")
+
+        compatible_path = os.path.splitext(final_path)[0] + ".tv-compatible.mp4"
+        temp_path = os.path.splitext(final_path)[0] + ".tv-compatible.tmp.mp4"
+        try:
+            command = [
+                ffmpeg_exe, "-y", "-i", final_path,
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-c:v", "libx264", "-preset", "veryfast",
+                "-crf", "22", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000",
+                "-movflags", "+faststart", temp_path
+            ]
+            result = subprocess.run(
+                command, check=True, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, text=True
+            )
+            if os.path.splitext(final_path)[1].lower() == ".mp4":
+                os.replace(temp_path, final_path)
+            else:
+                os.replace(temp_path, compatible_path)
+                final_path = compatible_path
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
         app.after(
             0,
             lambda: download_success(
