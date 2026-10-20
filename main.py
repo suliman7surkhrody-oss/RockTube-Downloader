@@ -1955,7 +1955,10 @@ def download_failed(error):
 
 def refresh_downloads_view():
     """Refresh visible per-video status rows without clearing the download data."""
-    if downloads_list_frame is None or not downloads_list_frame.winfo_exists():
+    try:
+        if downloads_list_frame is None or not downloads_list_frame.winfo_exists():
+            return
+    except Exception:
         return
     for widget in downloads_list_frame.winfo_children():
         widget.destroy()
