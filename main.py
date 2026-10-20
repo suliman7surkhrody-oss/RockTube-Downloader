@@ -1944,7 +1944,7 @@ def refresh_downloads_view():
         status = item.get("status", "Waiting")
         pct = int(float(item.get("progress", 0) or 0) * 100)
         detail = status
-        if status in ("Downloading", "Converting for TV"):
+        if status == "Downloading":
             detail += f"  •  {pct}%"
         if item.get("error"):
             detail += "  •  " + item["error"][:160]
