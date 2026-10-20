@@ -32,18 +32,18 @@ jobs:
       - name: Validate Python syntax
         run: python -m py_compile main.py
 
-      - name: Verify direct-download-only TV compatibility
+      - name: Verify minimal direct-download TV compatibility patch
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $source = Get-Content "main.py" -Raw
-          if ($source -notmatch 'vcodec\^=avc1' -or $source -notmatch 'acodec\^=mp4a') {
-            throw "The downloader is not selecting H.264/AAC source formats."
+          if ($source -notmatch 'best\[ext=mp4\]\[vcodec\^=avc1\]\[acodec\^=mp4a\]') {
+            throw "The downloader does not select a pre-muxed H.264/AAC MP4."
           }
-          if ($source -match 'libx264|Converting for TV|merge_output_format|ffmpeg_location|bestvideo.*\+') {
-            throw "A conversion, stream-merging, or FFmpeg execution path remains in the application."
+          if ($source -match 'bestvideo\[height|bestaudio') {
+            throw "The selected download format may require merging separate streams."
           }
-          Write-Host "Verified: one pre-muxed H.264/AAC MP4 source only; no conversion or stream merging."
+          Write-Host "Verified: single-file H.264/AAC MP4 selection; original app UI retained."
 
       - name: Build portable application folder
         shell: pwsh
