@@ -49,6 +49,23 @@ jobs:
           & "ffmpeg\ffmpeg.exe" -hide_banner -version
           if ($LASTEXITCODE -ne 0) { throw "FFmpeg failed to launch with its bundled dependencies." }
 
+      - name: Validate Python syntax
+        run: python -m py_compile main.py
+
+      - name: Smoke-test TV-compatible encoding
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $output = "$env:RUNNER_TEMP\rocktube-tv-smoke.mp4"
+          & "ffmpeg\ffmpeg.exe" -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=1920x1080:rate=30" -f lavfi -i "sine=frequency=1000:sample_rate=48000" -t 2 -map 0:v:0 -map 1:a:0 -vf "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2,fps=25" -c:v libx264 -profile:v high -level:v 4.0 -preset veryfast -crf 22 -pix_fmt yuv420p -c:a aac -profile:a aac_low -b:a 128k -ac 2 -ar 44100 -movflags +faststart $output
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $output)) { throw "FFmpeg Samsung TV encoding smoke test failed." }
+          $probe = & "ffmpeg\ffprobe.exe" -v error -show_streams -of json $output | ConvertFrom-Json
+          $video = $probe.streams | Where-Object { $_.codec_type -eq "video" } | Select-Object -First 1
+          $audio = $probe.streams | Where-Object { $_.codec_type -eq "audio" } | Select-Object -First 1
+          if ($video.codec_name -ne "h264" -or $video.width -gt 1920 -or $video.height -gt 1080 -or $video.pix_fmt -ne "yuv420p" -or $video.r_frame_rate -ne "25/1") { throw "Video output does not match the target TV profile." }
+          if ($audio.codec_name -ne "aac" -or $audio.sample_rate -ne "44100" -or $audio.channels -ne 2) { throw "Audio output does not match the target TV profile." }
+          Write-Host "Verified H.264/yuv420p/25fps video and AAC stereo 44.1kHz audio."
+
       - name: Build portable application folder
         shell: pwsh
         run: |
