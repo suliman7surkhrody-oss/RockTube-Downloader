@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw
 # ============================================================
 
 APP_NAME = "RockTube Downloader"
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2-tv-test"
 DEVELOPER = "Mr.Sulim.Inc"
 
 # ------------------------------------------------------------
@@ -28,10 +28,20 @@ DEVELOPER = "Mr.Sulim.Inc"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # FFmpeg is bundled in the candidate's internal runtime folder.
-FFMPEG_DIR = os.path.join(
-    getattr(sys, "_MEIPASS", BASE_DIR),
-    "ffmpeg"
-)
+def get_ffmpeg_dir():
+    """Find FFmpeg in source, PyInstaller one-folder, or one-file layouts."""
+    candidates = [
+        os.path.join(getattr(sys, "_MEIPASS", BASE_DIR), "ffmpeg"),
+        os.path.join(BASE_DIR, "ffmpeg"),
+        os.path.join(BASE_DIR, "_internal", "ffmpeg"),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(os.path.join(candidate, "ffmpeg.exe")):
+            return candidate
+    return candidates[0]
+
+
+FFMPEG_DIR = get_ffmpeg_dir()
 
 LOGO_FILE = os.path.join(BASE_DIR, "rocktube_logo.png")
 ICON_FILE = os.path.join(BASE_DIR, "rocktube.ico")
@@ -190,6 +200,9 @@ remaining_label = None
 
 download_button = None
 cancel_button = None
+queue_button = None
+queue_label = None
+download_queue = []
 
 home_button = None
 history_button = None
@@ -567,8 +580,39 @@ def show_home():
 
     analyze_button.pack(
         padx=20,
-        pady=(0, 20),
+        pady=(0, 8),
         fill="x"
+    )
+
+    global queue_button
+    global queue_label
+
+    queue_button = ctk.CTkButton(
+        url_card,
+        text="ADD URL TO DOWNLOAD QUEUE",
+        height=38,
+        corner_radius=8,
+        fg_color="#292929",
+        hover_color="#383838",
+        font=ctk.CTkFont(size=12, weight="bold"),
+        command=queue_current_url
+    )
+    queue_button.pack(
+        padx=20,
+        pady=(0, 8),
+        fill="x"
+    )
+
+    queue_label = ctk.CTkLabel(
+        url_card,
+        text="Queue: 0 videos",
+        text_color=MUTED,
+        font=ctk.CTkFont(size=11)
+    )
+    queue_label.pack(
+        padx=20,
+        pady=(0, 16),
+        anchor="w"
     )
 
     # --------------------------------------------------------
@@ -1490,266 +1534,274 @@ def update_progress(
 # DOWNLOAD
 # ============================================================
 
+def queue_current_url():
+    """Add the URL field to the sequential download queue."""
+    url = url_entry.get().strip() if url_entry is not None else ""
+    if not url:
+        messagebox.showwarning("Missing URL", "Paste a video URL first.")
+        return
+    if url not in download_queue:
+        download_queue.append(url)
+    if queue_label is not None:
+        queue_label.configure(text=f"Queue: {len(download_queue)} video(s) waiting")
+    status_label.configure(text=f"Added to queue ({len(download_queue)} waiting)", text_color=GREEN)
+
+
 def download_video():
 
     global download_running
     global download_cancelled
+    global download_queue
 
     if download_running:
+        status_label.configure(text="Downloads are already running. Add more URLs to the queue above.", text_color=RED)
         return
 
-    if not video_info:
+    urls = []
+    if video_info:
+        current_url = video_info.get("webpage_url") or video_info.get("original_url")
+        if current_url:
+            urls.append(current_url)
 
-        messagebox.showwarning(
-            "No Video",
-            "Please analyze a video first."
-        )
+    for queued_url in download_queue:
+        if queued_url not in urls:
+            urls.append(queued_url)
 
+    if not urls:
+        messagebox.showwarning("No Videos", "Analyze a video or add one or more URLs to the download queue first.")
         return
 
-    if not os.path.isdir(
-        download_folder
-    ):
-
+    if not os.path.isdir(download_folder):
         try:
-
-            os.makedirs(
-                download_folder,
-                exist_ok=True
-            )
-
+            os.makedirs(download_folder, exist_ok=True)
         except Exception as e:
-
-            messagebox.showerror(
-                "Folder Error",
-                str(e)
-            )
-
+            messagebox.showerror("Folder Error", str(e))
             return
+
+    download_queue = []
+    if queue_label is not None:
+        queue_label.configure(text="Queue: 0 videos waiting")
 
     download_cancelled = False
     download_running = True
 
-    download_button.configure(
-        state="disabled"
-    )
-
-    cancel_button.configure(
-        state="normal"
-    )
-
-    status_label.configure(
-        text="Starting download...",
-        text_color=RED
-    )
-
+    download_button.configure(state="disabled")
+    cancel_button.configure(state="normal")
+    status_label.configure(text=f"Preparing {len(urls)} video(s)...", text_color=RED)
     progress_bar.set(0)
-
-    percent_label.configure(
-        text="0%"
-    )
-
-    speed_label.configure(
-        text="Speed: --"
-    )
-
-    remaining_label.configure(
-        text="Remaining: --:--"
-    )
+    percent_label.configure(text="0%")
+    speed_label.configure(text="Speed: --")
+    remaining_label.configure(text="Remaining: --:--")
 
     quality = quality_combo.get()
-
     settings["quality"] = quality
-
-    save_json(
-        SETTINGS_FILE,
-        settings
-    )
+    save_json(SETTINGS_FILE, settings)
 
     threading.Thread(
         target=download_worker,
-        args=(quality,),
+        args=(quality, urls),
         daemon=True
     ).start()
 
 
-def download_worker(quality):
+def download_worker(quality, urls):
 
     global current_ydl
     global download_running
+    global download_cancelled
 
-    url = video_info.get(
-        "webpage_url"
-    )
+    completed = []
+    failures = []
 
-    if not url:
+    # Include URLs added while the current batch is running.
+    pending = list(urls)
 
-        url = video_info.get(
-            "original_url"
-        )
+    def set_status(message):
+        app.after(0, lambda text=message: status_label.configure(text=text, text_color=RED))
 
-    output_template = os.path.join(
-        download_folder,
-        "%(title)s.%(ext)s"
-    )
+    while pending or download_queue:
+        if download_cancelled:
+            break
 
-    # --------------------------------------------------------
-    # Format selection
-    # --------------------------------------------------------
-
-    if quality == "Best Available":
-
-        format_string = (
-            "bestvideo+bestaudio/"
-            "best"
-        )
-
-    else:
-
-        try:
-
-            height = int(
-                quality.replace(
-                    "p",
-                    ""
-                )
-            )
-
-            format_string = (
-                f"bestvideo[height<={height}]"
-                "+bestaudio/"
-                f"best[height<={height}]"
-            )
-
-        except Exception:
-
-            format_string = (
-                "bestvideo+bestaudio/"
-                "best"
-            )
-
-    options = {
-        "format": format_string,
-        "outtmpl": output_template,
-        "merge_output_format": "mp4",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "progress_hooks": [
-            progress_hook
-        ],
-        "windowsfilenames": True
-    }
-
-    if os.path.isfile(os.path.join(FFMPEG_DIR, "ffmpeg.exe")):
-        options["ffmpeg_location"] = FFMPEG_DIR
-
-    try:
-
-        with yt_dlp.YoutubeDL(
-            options
-        ) as ydl:
-
-            current_ydl = ydl
-
-            info = ydl.extract_info(
-                url,
-                download=True
-            )
-
-            prepared_path = ydl.prepare_filename(info)
-
-        # Find the actual output file after any format merging.
-        base_path = os.path.splitext(prepared_path)[0]
-        candidates = [base_path + ".mp4", info.get("_filename")]
-
-        for requested in info.get("requested_downloads", []) or []:
-            if isinstance(requested, dict):
-                candidates.extend([
-                    requested.get("filepath"),
-                    requested.get("filename"),
-                ])
-
-        candidates.append(prepared_path)
-
-        final_path = next(
-            (
-                os.path.abspath(path)
-                for path in candidates
-                if path and os.path.isfile(path)
-            ),
-            prepared_path
-        )
-
-        # Convert completed downloads to a Samsung-friendly MP4:
-        # H.264 video, AAC-LC-compatible stereo audio, and fast-start metadata.
-        ffmpeg_exe = os.path.join(FFMPEG_DIR, "ffmpeg.exe")
-        if not os.path.isfile(ffmpeg_exe):
-            raise FileNotFoundError("Bundled FFmpeg is missing; cannot create TV-compatible video.")
-
-        compatible_path = os.path.splitext(final_path)[0] + ".tv-compatible.mp4"
-        temp_path = os.path.splitext(final_path)[0] + ".tv-compatible.tmp.mp4"
-        try:
-            command = [
-                ffmpeg_exe, "-y", "-i", final_path,
-                "-map", "0:v:0", "-map", "0:a:0?",
-                "-c:v", "libx264", "-preset", "veryfast",
-                "-crf", "22", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000",
-                "-movflags", "+faststart", temp_path
-            ]
-            result = subprocess.run(
-                command, check=True, stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE, text=True
-            )
-            if os.path.splitext(final_path)[1].lower() == ".mp4":
-                os.replace(temp_path, final_path)
-            else:
-                os.replace(temp_path, compatible_path)
-                final_path = compatible_path
-        finally:
-            if os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-
-        app.after(
-            0,
-            lambda: download_success(
-                info,
-                final_path,
-                quality
-            )
-        )
-
-    except Exception as e:
-
-        error_text = get_friendly_error(e)
-
-        if (
-            "cancel" in str(e).lower()
-            or download_cancelled
-        ):
-
-            app.after(
-                0,
-                download_cancelled_ui
-            )
-
+        if pending:
+            url = pending.pop(0)
         else:
+            # URLs queued while the current batch was running are processed next.
+            url = download_queue.pop(0)
+            app.after(0, lambda: queue_label.configure(
+                text=f"Queue: {len(download_queue)} video(s) waiting"
+            ))
 
-            app.after(
-                0,
-                lambda: download_failed(
-                    error_text
-                )
+        try:
+            set_status(f"Downloading {len(completed) + len(failures) + 1} of the batch...")
+            output_template = os.path.join(download_folder, "%(title)s.%(ext)s")
+
+            if quality == "Best Available":
+                format_string = "bestvideo+bestaudio/best"
+            else:
+                try:
+                    height = int(quality.replace("p", ""))
+                    format_string = (
+                        f"bestvideo[height<={height}]+bestaudio/"
+                        f"best[height<={height}]"
+                    )
+                except Exception:
+                    format_string = "bestvideo+bestaudio/best"
+
+            ffmpeg_exe = os.path.join(FFMPEG_DIR, "ffmpeg.exe")
+            options = {
+                "format": format_string,
+                "outtmpl": output_template,
+                "merge_output_format": "mp4",
+                "noplaylist": True,
+                "quiet": True,
+                "no_warnings": True,
+                "progress_hooks": [progress_hook],
+                "windowsfilenames": True,
+            }
+            if os.path.isfile(ffmpeg_exe):
+                options["ffmpeg_location"] = FFMPEG_DIR
+
+            with yt_dlp.YoutubeDL(options) as ydl:
+                current_ydl = ydl
+                info = ydl.extract_info(url, download=True)
+                prepared_path = ydl.prepare_filename(info)
+
+            base_path = os.path.splitext(prepared_path)[0]
+            candidates = [base_path + ".mp4", info.get("_filename")]
+            for requested in info.get("requested_downloads", []) or []:
+                if isinstance(requested, dict):
+                    candidates.extend([requested.get("filepath"), requested.get("filename")])
+            candidates.append(prepared_path)
+
+            final_path = next(
+                (os.path.abspath(path) for path in candidates if path and os.path.isfile(path)),
+                prepared_path
             )
 
-    finally:
+            if not os.path.isfile(ffmpeg_exe):
+                raise FileNotFoundError(
+                    "The bundled FFmpeg encoder is missing. This test build needs to be rebuilt."
+                )
 
-        current_ydl = None
-        download_running = False
+            compatible_path = os.path.splitext(final_path)[0] + ".tv-compatible.mp4"
+            temp_path = os.path.splitext(final_path)[0] + ".tv-compatible.tmp.mp4"
+            set_status("Download reached 100% — converting for Samsung TV compatibility...")
+            if progress_bar is not None:
+                app.after(0, lambda: percent_label.configure(text="Converting for TV…"))
+            try:
+                command = [
+                    ffmpeg_exe, "-hide_banner", "-y", "-i", final_path,
+                    "-map", "0:v:0", "-map", "0:a:0?",
+                    "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2,fps=25",
+                    "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.0",
+                    "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-profile:a", "aac_low", "-b:a", "128k",
+                    "-ac", "2", "-ar", "44100", "-movflags", "+faststart",
+                    temp_path
+                ]
+                startupinfo = None
+                creationflags = 0
+                if os.name == "nt":
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = 0
+                    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                result = subprocess.run(
+                    command,
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
+                )
+                if os.path.splitext(final_path)[1].lower() == ".mp4":
+                    os.replace(temp_path, final_path)
+                else:
+                    os.replace(temp_path, compatible_path)
+                    final_path = compatible_path
+            except subprocess.CalledProcessError as exc:
+                details = (exc.stderr or str(exc)).strip()
+                raise RuntimeError("FFmpeg could not convert this video. " + details[-1800:])
+            finally:
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError:
+                        pass
+
+            if not os.path.isfile(final_path) or os.path.getsize(final_path) <= 0:
+                raise RuntimeError("Conversion finished without a valid output file.")
+
+            completed.append((info, final_path, quality))
+            app.after(0, lambda title=info.get("title", "Video"): status_label.configure(
+                text=f"TV-compatible video ready: {title}", text_color=GREEN
+            ))
+
+        except Exception as e:
+            failures.append((url, get_friendly_error(e)))
+        finally:
+            current_ydl = None
+
+    app.after(0, lambda: batch_download_finished(completed, failures, download_cancelled))
+
+
+def batch_download_finished(completed, failures, was_cancelled=False):
+    """Restore controls after the entire sequential batch has finished."""
+    global download_running
+    global download_cancelled
+
+    download_running = False
+    download_cancelled = False
+
+    download_button.configure(state="normal")
+    cancel_button.configure(state="disabled")
+    progress_bar.set(1 if completed else 0)
+    percent_label.configure(text="100%" if completed else "0%")
+    speed_label.configure(text="Complete" if completed else "Speed: --")
+    remaining_label.configure(text="Remaining: 00:00" if completed else "Remaining: --:--")
+
+    for info, final_path, quality in completed:
+        title = info.get("title", "Unknown title")
+        try:
+            file_size = os.path.getsize(final_path) if os.path.isfile(final_path) else None
+        except OSError:
+            file_size = None
+        history.insert(0, {
+            "title": title,
+            "url": info.get("webpage_url", info.get("original_url", "")),
+            "path": final_path,
+            "quality": quality,
+            "size": file_size,
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    del history[100:]
+    save_json(HISTORY_FILE, history)
+
+    if was_cancelled:
+        status_label.configure(text=f"Cancelled. {len(completed)} video(s) completed.", text_color=RED)
+    elif failures:
+        status_label.configure(
+            text=f"Finished with {len(completed)} completed and {len(failures)} failed.",
+            text_color=RED if not completed else GREEN
+        )
+    else:
+        status_label.configure(text=f"All done — {len(completed)} TV-compatible video(s) ready.", text_color=GREEN)
+
+    summary = []
+    if completed:
+        summary.append(f"Successfully converted: {len(completed)}")
+    if failures:
+        summary.append(f"Failed: {len(failures)}")
+        summary.extend(f"• {url}\n  {error[:300]}" for url, error in failures[:3])
+    if was_cancelled:
+        summary.append("The batch was cancelled.")
+
+    if completed or failures or was_cancelled:
+        messagebox.showinfo("RockTube Download Results", "\n\n".join(summary) or "Batch finished.")
 
 
 # ============================================================
