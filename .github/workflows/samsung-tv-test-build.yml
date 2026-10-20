@@ -1,0 +1,62 @@
+name: Build Samsung TV Test Version
+
+on:
+  push:
+    branches:
+      - fix/samsung-tv-compatible-downloads
+    paths:
+      - "main.py"
+      - "rocktube.ico"
+      - "rocktube_logo.png"
+      - ".github/workflows/samsung-tv-test-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-test:
+    runs-on: windows-latest
+    steps:
+      - name: Check out test branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install application and build dependencies
+        run: python -m pip install --upgrade pip customtkinter yt-dlp pillow pyinstaller
+
+      - name: Download FFmpeg tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "$env:RUNNER_TEMP\ffmpeg.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\ffmpeg.zip" -DestinationPath "$env:RUNNER_TEMP\ffmpeg-unpack" -Force
+          $ffmpeg = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg-unpack" -Filter ffmpeg.exe -Recurse | Select-Object -First 1
+          $ffprobe = Get-ChildItem "$env:RUNNER_TEMP\ffmpeg-unpack" -Filter ffprobe.exe -Recurse | Select-Object -First 1
+          if (-not $ffmpeg -or -not $ffprobe) { throw "FFmpeg or FFprobe executable was not found." }
+          New-Item -ItemType Directory -Force -Path "ffmpeg" | Out-Null
+          Copy-Item $ffmpeg.FullName "ffmpeg\ffmpeg.exe"
+          Copy-Item $ffprobe.FullName "ffmpeg\ffprobe.exe"
+          & "ffmpeg\ffmpeg.exe" -hide_banner -encoders | Select-String "libx264"
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg encoder verification failed." }
+          & "ffmpeg\ffmpeg.exe" -hide_banner -encoders | Select-String "aac"
+
+      - name: Build portable application folder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name "RockTube Downloader" --icon "rocktube.ico" --add-data "rocktube_logo.png;." --add-binary "ffmpeg\ffmpeg.exe;ffmpeg" --add-binary "ffmpeg\ffprobe.exe;ffmpeg" main.py
+          if (-not (Test-Path "dist\RockTube Downloader\RockTube Downloader.exe")) { throw "Portable application executable was not created." }
+          Compress-Archive -Path "dist\RockTube Downloader" -DestinationPath "RockTube-Samsung-TV-Test.zip" -Force
+
+      - name: Upload separate test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: RockTube-Samsung-TV-Test
+          path: RockTube-Samsung-TV-Test.zip
+          if-no-files-found: error
+          retention-days: 14
