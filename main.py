@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw
 # ============================================================
 
 APP_NAME = "RockTube Downloader"
-APP_VERSION = "2.2.3-tv-test"
+APP_VERSION = "2.2.4-tv-test"
 DEVELOPER = "Mr.Sulim.Inc"
 
 # ------------------------------------------------------------
@@ -26,22 +26,6 @@ DEVELOPER = "Mr.Sulim.Inc"
 # ------------------------------------------------------------
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# FFmpeg is bundled in the candidate's internal runtime folder.
-def get_ffmpeg_dir():
-    """Find FFmpeg in source, PyInstaller one-folder, or one-file layouts."""
-    candidates = [
-        os.path.join(getattr(sys, "_MEIPASS", BASE_DIR), "ffmpeg"),
-        os.path.join(BASE_DIR, "ffmpeg"),
-        os.path.join(BASE_DIR, "_internal", "ffmpeg"),
-    ]
-    for candidate in candidates:
-        if os.path.isfile(os.path.join(candidate, "ffmpeg.exe")):
-            return candidate
-    return candidates[0]
-
-
-FFMPEG_DIR = get_ffmpeg_dir()
 
 LOGO_FILE = os.path.join(BASE_DIR, "rocktube_logo.png")
 ICON_FILE = os.path.join(BASE_DIR, "rocktube.ico")
@@ -1560,26 +1544,23 @@ def download_worker(quality):
             except (TypeError, ValueError, AttributeError):
                 max_height = 1080
 
+            # Select one pre-muxed MP4 file with H.264 video and AAC audio.
+            # Never merge separate streams or re-encode; this keeps the laptop cool
+            # and leaves only one final video file in the download folder.
             format_string = (
-                f"best[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<={max_height}][fps<=30]"
-                f"/bestvideo[ext=mp4][vcodec^=avc1][height<={max_height}][fps<=30]+"
-                "bestaudio[ext=m4a][acodec^=mp4a]"
-                f"/best[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<={max_height}]"
-                f"/bestvideo[ext=mp4][vcodec^=avc1][height<={max_height}]+"
-                "bestaudio[ext=m4a][acodec^=mp4a]"
+                f"best[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<={max_height}]"
+                f"/best[ext=mp4][vcodec^=avc1][acodec^=mp4a]"
             )
 
             output_template = os.path.join(download_folder, "%(title)s.%(ext)s")
             options = {
                 "format": format_string,
                 "outtmpl": output_template,
-                "merge_output_format": "mp4",
                 "noplaylist": True,
                 "quiet": True,
                 "no_warnings": True,
                 "progress_hooks": [progress_hook],
                 "windowsfilenames": True,
-                "ffmpeg_location": FFMPEG_DIR,
                 "overwrites": True,
             }
 
