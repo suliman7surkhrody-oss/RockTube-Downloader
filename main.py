@@ -1392,6 +1392,7 @@ def progress_hook(data):
     if download_cancelled:
         raise yt_dlp.utils.DownloadCancelled("Download cancelled by user")
 
+    item = current_download_item
     if data.get("status") == "downloading":
         downloaded = data.get("downloaded_bytes", 0)
         total = data.get("total_bytes") or data.get("total_bytes_estimate") or 0
@@ -1399,49 +1400,21 @@ def progress_hook(data):
         eta = data.get("eta")
         percent = downloaded / total if total else 0
 
+        # Stream downloads may happen one after another; show active download progress only.
         app.after(0, lambda p=percent, d=downloaded, t=total, sp=speed, e=eta:
                   update_progress(p, d, t, sp, e))
-        item = current_download_item
         if item is not None:
             item["progress"] = percent
             item["status"] = "Downloading"
             app.after(0, refresh_downloads_view)
 
     elif data.get("status") == "finished":
-        app.after(0, lambda: update_progress(
-            1, data.get("downloaded_bytes", 0), data.get("total_bytes", 0), None, 0
-        ))
-        item = current_download_item
+        # Do not report 100% here: yt-dlp may still be merging streams.
+        # Stream merge is part of downloading and does not re-encode the video.
         if item is not None:
-            item["progress"] = 1
-            item["status"] = "Converting for TV"
+            item["status"] = "Downloading"
+            item["progress"] = min(item.get("progress", 0.0), 0.99)
             app.after(0, refresh_downloads_view)
-
-
-def _widget_alive(widget):
-    try:
-        return widget is not None and bool(widget.winfo_exists())
-    except Exception:
-        return False
-
-
-def update_progress(percent, downloaded, total, speed, eta):
-
-    if _widget_alive(progress_bar):
-        progress_bar.set(max(0, min(1, percent)))
-    if _widget_alive(percent_label):
-        percent_label.configure(text=f"{percent * 100:.1f}%")
-    if total and _widget_alive(status_label):
-        status_label.configure(text=f"{format_bytes(downloaded)} / {format_bytes(total)}")
-    if _widget_alive(speed_label):
-        speed_label.configure(text=f"Speed: {format_bytes(speed)}/s" if speed else "Speed: --")
-    if _widget_alive(remaining_label):
-        remaining_label.configure(text=f"Remaining: {format_time(eta)}")
-
-    item = current_download_item
-    if item is not None:
-        item["progress"] = percent
-        app.after(0, refresh_downloads_view)
 
 
 # ============================================================
@@ -1567,7 +1540,6 @@ def download_worker(quality):
     failures = []
 
     while not download_cancelled:
-        # Pick up new items added from the Downloads page while the current file is active.
         item = next((entry for entry in download_items if entry["status"] == "Waiting"), None)
         if item is None:
             break
@@ -1580,22 +1552,24 @@ def download_worker(quality):
 
         url = item["url"]
         try:
-            app.after(0, lambda it=item: it.update(status="Analyzing"))
+            # Download an already TV-friendly source rendition. Never re-encode.
+            # H.264/AVC video + AAC audio in MP4/M4A, capped at 1080p.
+            try:
+                requested_height = int(quality.replace("p", ""))
+                max_height = min(requested_height, 1080)
+            except (TypeError, ValueError, AttributeError):
+                max_height = 1080
+
+            format_string = (
+                f"best[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<={max_height}][fps<=30]"
+                f"/bestvideo[ext=mp4][vcodec^=avc1][height<={max_height}][fps<=30]+"
+                "bestaudio[ext=m4a][acodec^=mp4a]"
+                f"/best[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<={max_height}]"
+                f"/bestvideo[ext=mp4][vcodec^=avc1][height<={max_height}]+"
+                "bestaudio[ext=m4a][acodec^=mp4a]"
+            )
+
             output_template = os.path.join(download_folder, "%(title)s.%(ext)s")
-
-            if quality == "Best Available":
-                format_string = "bestvideo+bestaudio/best"
-            else:
-                try:
-                    height = int(quality.replace("p", ""))
-                    format_string = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
-                except Exception:
-                    format_string = "bestvideo+bestaudio/best"
-
-            ffmpeg_exe = os.path.join(FFMPEG_DIR, "ffmpeg.exe")
-            if not os.path.isfile(ffmpeg_exe):
-                raise FileNotFoundError("Bundled FFmpeg is missing. Rebuild the test package.")
-
             options = {
                 "format": format_string,
                 "outtmpl": output_template,
@@ -1606,6 +1580,7 @@ def download_worker(quality):
                 "progress_hooks": [progress_hook],
                 "windowsfilenames": True,
                 "ffmpeg_location": FFMPEG_DIR,
+                "overwrites": True,
             }
 
             with yt_dlp.YoutubeDL(options) as ydl:
@@ -1623,62 +1598,30 @@ def download_worker(quality):
                 None
             )
             if not final_path:
-                raise RuntimeError("Download completed, but the output file could not be located.")
+                raise RuntimeError("The download finished, but the final MP4 file could not be located.")
+
+            # If the site has no compatible source rendition, yt-dlp fails above.
+            # Do not silently launch a CPU-heavy conversion or leave a second file.
+            if os.path.splitext(final_path)[1].lower() != ".mp4":
+                raise RuntimeError(
+                    "This video has no directly downloadable MP4 version matching the TV-friendly "
+                    "H.264/AAC profile. No conversion was started."
+                )
 
             item["title"] = info.get("title", url)
-            item["status"] = "Converting for TV"
-            app.after(0, refresh_downloads_view)
-
-            temp_path = os.path.splitext(final_path)[0] + ".tv-compatible.tmp.mp4"
-            compatible_path = os.path.splitext(final_path)[0] + ".tv-compatible.mp4"
-            try:
-                command = [
-                    ffmpeg_exe, "-hide_banner", "-y", "-i", final_path,
-                    "-map", "0:v:0", "-map", "0:a:0?",
-                    "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2,fps=25",
-                    "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.0",
-                    "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-profile:a", "aac_low", "-b:a", "128k",
-                    "-ac", "2", "-ar", "44100", "-movflags", "+faststart",
-                    temp_path
-                ]
-                startupinfo = None
-                creationflags = 0
-                if os.name == "nt":
-                    startupinfo = subprocess.STARTUPINFO()
-                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                    startupinfo.wShowWindow = 0
-                    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                result = subprocess.run(
-                    command, check=True, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                    errors="replace", startupinfo=startupinfo, creationflags=creationflags
-                )
-                if os.path.splitext(final_path)[1].lower() == ".mp4":
-                    os.replace(temp_path, final_path)
-                else:
-                    os.replace(temp_path, compatible_path)
-                    final_path = compatible_path
-            except subprocess.CalledProcessError as exc:
-                details = (exc.stderr or str(exc)).strip()
-                raise RuntimeError("TV conversion failed: " + details[-1500:])
-            finally:
-                if os.path.exists(temp_path):
-                    try:
-                        os.remove(temp_path)
-                    except OSError:
-                        pass
-
-            if not os.path.isfile(final_path) or os.path.getsize(final_path) <= 0:
-                raise RuntimeError("TV conversion did not produce a valid output file.")
-
             item["path"] = final_path
             item["progress"] = 1.0
             item["status"] = "Completed"
             item["error"] = ""
             completed.append((info, final_path, quality))
+            app.after(0, lambda: update_progress(1, 0, 0, None, 0))
         except Exception as exc:
             error = get_friendly_error(exc)
+            if "requested format is not available" in str(exc).lower() or "no video formats" in str(exc).lower():
+                error = (
+                    "No directly downloadable TV-compatible version was available for this video. "
+                    "RockTube no longer converts videos; try another quality or video."
+                )
             item["status"] = "Failed"
             item["error"] = error
             failures.append((url, error))
@@ -1689,8 +1632,8 @@ def download_worker(quality):
 
     if download_cancelled:
         for item in download_items:
-            if item["status"] in ("Waiting", "Downloading", "Analyzing", "Converting for TV"):
-                item["status"] = "Cancelled" if item is not current_download_item else "Waiting"
+            if item["status"] in ("Waiting", "Downloading", "Analyzing"):
+                item["status"] = "Cancelled"
 
     app.after(0, lambda: batch_download_finished(completed, failures, download_cancelled))
 
@@ -1964,7 +1907,7 @@ def refresh_downloads_view():
         widget.destroy()
 
     waiting = sum(1 for item in download_items if item["status"] == "Waiting")
-    active = sum(1 for item in download_items if item["status"] in ("Analyzing", "Downloading", "Converting for TV"))
+    active = sum(1 for item in download_items if item["status"] in ("Analyzing", "Downloading"))
     completed = sum(1 for item in download_items if item["status"] == "Completed")
     failed = sum(1 for item in download_items if item["status"] == "Failed")
     if downloads_summary_label is not None and downloads_summary_label.winfo_exists():
