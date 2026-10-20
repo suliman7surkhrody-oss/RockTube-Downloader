@@ -1418,20 +1418,24 @@ def progress_hook(data):
             app.after(0, refresh_downloads_view)
 
 
+def _widget_alive(widget):
+    try:
+        return widget is not None and bool(widget.winfo_exists())
+    except Exception:
+        return False
+
+
 def update_progress(percent, downloaded, total, speed, eta):
 
-    if progress_bar is not None:
+    if _widget_alive(progress_bar):
         progress_bar.set(max(0, min(1, percent)))
+    if _widget_alive(percent_label):
         percent_label.configure(text=f"{percent * 100:.1f}%")
-
-        if total:
-            status_label.configure(
-                text=f"{format_bytes(downloaded)} / {format_bytes(total)}"
-            )
-
-        speed_label.configure(
-            text=f"Speed: {format_bytes(speed)}/s" if speed else "Speed: --"
-        )
+    if total and _widget_alive(status_label):
+        status_label.configure(text=f"{format_bytes(downloaded)} / {format_bytes(total)}")
+    if _widget_alive(speed_label):
+        speed_label.configure(text=f"Speed: {format_bytes(speed)}/s" if speed else "Speed: --")
+    if _widget_alive(remaining_label):
         remaining_label.configure(text=f"Remaining: {format_time(eta)}")
 
     item = current_download_item
@@ -1699,14 +1703,17 @@ def batch_download_finished(completed, failures, was_cancelled=False):
     download_cancelled = False
     current_download_item = None
 
-    if download_button is not None:
+    if _widget_alive(download_button):
         download_button.configure(state="normal")
-    if cancel_button is not None:
+    if _widget_alive(cancel_button):
         cancel_button.configure(state="disabled")
-    if progress_bar is not None:
+    if _widget_alive(progress_bar):
         progress_bar.set(1 if completed and not failures else 0)
+    if _widget_alive(percent_label):
         percent_label.configure(text="100%" if completed and not failures else "0%")
+    if _widget_alive(speed_label):
         speed_label.configure(text="Complete" if completed and not failures else "Speed: --")
+    if _widget_alive(remaining_label):
         remaining_label.configure(text="Remaining: 00:00" if completed and not failures else "Remaining: --:--")
 
     for info, final_path, quality in completed:
@@ -1726,7 +1733,7 @@ def batch_download_finished(completed, failures, was_cancelled=False):
     del history[100:]
     save_json(HISTORY_FILE, history)
 
-    if status_label is not None:
+    if _widget_alive(status_label):
         if was_cancelled:
             status_label.configure(text=f"Cancelled. {len(completed)} video(s) completed.", text_color=RED)
         elif failures:
