@@ -32,7 +32,7 @@ jobs:
       - name: Validate Python syntax
         run: python -m py_compile main.py
 
-      - name: Verify minimal direct-download TV compatibility patch
+      - name: Verify direct-download H.264/AAC format selection
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
