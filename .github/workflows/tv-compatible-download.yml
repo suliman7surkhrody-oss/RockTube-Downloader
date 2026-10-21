@@ -46,7 +46,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $source = Get-Content "main.py" -Raw
-          if ($source -notmatch 'best\[ext=mp4\]\[vcodec\^=avc1\.42\]\[acodec\^=mp4a\]') {
+          if ($source -notmatch 'best\\[ext=mp4\\]\\[vcodec\\^=avc1\\]\\[acodec\\^=mp4a\\]') {
             throw "Baseline H.264/AAC MP4 is not prioritized."
           }
           if ($source -notmatch 'merge_output_format.*mp4') {
