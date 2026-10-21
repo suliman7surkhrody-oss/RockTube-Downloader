@@ -3,7 +3,8 @@ name: Check and Build TV-Compatible Download
 on:
   push:
     branches:
-      - feature/direct-tv-compatible-format-selection
+      - main
+      - "feature/**"
     paths:
       - "main.py"
       - ".github/workflows/tv-compatible-download.yml"
