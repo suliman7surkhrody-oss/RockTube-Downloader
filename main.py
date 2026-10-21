@@ -1594,39 +1594,35 @@ def download_worker(quality):
     )
 
     # --------------------------------------------------------
-    # Format selection
+    # Format selection: direct-download, device-friendly MP4
     # --------------------------------------------------------
 
-    if quality == "Best Available":
-
-        format_string = (
-            "bestvideo+bestaudio/"
-            "best"
+    # Prefer a single MP4 that already contains H.264/AVC video and
+    # AAC audio. For "Best Available", cap the preferred height at 720p
+    # for broad TV/laptop/phone compatibility. Explicit quality choices
+    # remain available. If a pre-muxed file is unavailable, yt-dlp may
+    # merge compatible H.264 + AAC streams into MP4 without re-encoding.
+    try:
+        height = (
+            720
+            if quality == "Best Available"
+            else int(quality.replace("p", ""))
         )
+    except (TypeError, ValueError, AttributeError):
+        height = 720
 
-    else:
+    height = max(144, min(height, 2160))
 
-        try:
-
-            height = int(
-                quality.replace(
-                    "p",
-                    ""
-                )
-            )
-
-            format_string = (
-                f"bestvideo[height<={height}]"
-                "+bestaudio/"
-                f"best[height<={height}]"
-            )
-
-        except Exception:
-
-            format_string = (
-                "bestvideo+bestaudio/"
-                "best"
-            )
+    format_string = (
+        f"best[ext=mp4][vcodec^=avc1.42][acodec^=mp4a][height<={height}]/"
+        f"best[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<={height}]/"
+        f"bestvideo[ext=mp4][vcodec^=avc1.42][height<={height}]"
+        "+bestaudio[ext=m4a][acodec^=mp4a]/"
+        f"bestvideo[ext=mp4][vcodec^=avc1][height<={height}]"
+        "+bestaudio[ext=m4a][acodec^=mp4a]/"
+        "best[ext=mp4][vcodec^=avc1.42][acodec^=mp4a]/"
+        "best[ext=mp4][vcodec^=avc1][acodec^=mp4a]"
+    )
 
     options = {
         "format": format_string,
