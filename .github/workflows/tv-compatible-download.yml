@@ -1,0 +1,82 @@
+name: Check and Build TV-Compatible Download
+
+on:
+  push:
+    branches:
+      - feature/direct-tv-compatible-format-selection
+    paths:
+      - "main.py"
+      - ".github/workflows/tv-compatible-download.yml"
+      - "rocktube.ico"
+      - "rocktube_logo.png"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "main.py"
+      - ".github/workflows/tv-compatible-download.yml"
+      - "rocktube.ico"
+      - "rocktube_logo.png"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip customtkinter yt-dlp pillow pyinstaller imageio-ffmpeg
+
+      - name: Validate Python syntax
+        run: python -m py_compile main.py
+
+      - name: Verify direct compatible format policy (no re-encoding)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $source = Get-Content "main.py" -Raw
+          if ($source -notmatch 'best\[ext=mp4\]\[vcodec\^=avc1\.42\]\[acodec\^=mp4a\]') {
+            throw "Baseline H.264/AAC MP4 is not prioritized."
+          }
+          if ($source -notmatch 'merge_output_format.*mp4') {
+            throw "MP4 container output is not configured."
+          }
+          if ($source -match 'FFmpegVideoConvertor|recodevideo') {
+            throw "Video re-encoding was added; this build must not convert video."
+          }
+          Write-Host "Verified: direct H.264/AAC MP4 preferred; stream merge may occur without re-encoding."
+
+      - name: Bundle FFmpeg for stream merging (not transcoding)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "ffmpeg" | Out-Null
+          python -c "import imageio_ffmpeg,shutil; shutil.copy2(imageio_ffmpeg.get_ffmpeg_exe(), r'ffmpeg\ffmpeg.exe')"
+
+      - name: Build portable app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m PyInstaller --noconfirm --clean --onedir --windowed --name "RockTube Downloader" --icon "rocktube.ico" --add-data "rocktube_logo.png;." --add-data "rocktube.ico;." --add-binary "ffmpeg\ffmpeg.exe;ffmpeg" main.py
+          if (-not (Test-Path "dist\RockTube Downloader\RockTube Downloader.exe")) { throw "Portable executable was not created." }
+          Copy-Item "rocktube.ico" "dist\RockTube Downloader\rocktube.ico" -Force
+          Copy-Item "rocktube_logo.png" "dist\RockTube Downloader\rocktube_logo.png" -Force
+          Compress-Archive -Path "dist\RockTube Downloader" -DestinationPath "RockTube-TV-Compatible-Portable.zip" -Force
+
+      - name: Upload portable build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RockTube-TV-Compatible-Portable
+          path: RockTube-TV-Compatible-Portable.zip
+          if-no-files-found: error
+          retention-days: 14
