@@ -1594,14 +1594,10 @@ def download_worker(quality):
     )
 
     # --------------------------------------------------------
-    # Format selection: direct-download, device-friendly MP4
-    # --------------------------------------------------------
-
-    # Prefer a single MP4 that already contains H.264/AVC video and
-    # AAC audio. For "Best Available", cap the preferred height at 720p
-    # for broad TV/laptop/phone compatibility. Explicit quality choices
-    # remain available. If a pre-muxed file is unavailable, yt-dlp may
-    # merge compatible H.264 + AAC streams into MP4 without re-encoding.
+    # Format selection: prefer device-compatible H.264/AAC MP4.
+    # No video re-encoding is performed. If compatible video/audio streams
+    # are separate, FFmpeg only muxes them into MP4.
+    # Fall back to MP4, then the source's best format, if H.264/AAC is absent.
     try:
         height = (
             720
@@ -1614,14 +1610,12 @@ def download_worker(quality):
     height = max(144, min(height, 2160))
 
     format_string = (
-        f"best[ext=mp4][vcodec^=avc1.42][acodec^=mp4a][height<={height}]/"
         f"best[ext=mp4][vcodec^=avc1][acodec^=mp4a][height<={height}]/"
-        f"bestvideo[ext=mp4][vcodec^=avc1.42][height<={height}]"
-        "+bestaudio[ext=m4a][acodec^=mp4a]/"
+        "best[ext=mp4][vcodec^=avc1][acodec^=mp4a]/"
         f"bestvideo[ext=mp4][vcodec^=avc1][height<={height}]"
         "+bestaudio[ext=m4a][acodec^=mp4a]/"
-        "best[ext=mp4][vcodec^=avc1.42][acodec^=mp4a]/"
-        "best[ext=mp4][vcodec^=avc1][acodec^=mp4a]"
+        "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]/"
+        f"best[ext=mp4][height<={height}]/best[ext=mp4]/best"
     )
 
     options = {
