@@ -14,11 +14,11 @@ from PIL import Image, ImageDraw
 
 # ============================================================
 # ROCKTUBE DOWNLOADER
-# Version 2.2.1
+# Version 2.2.2
 # ============================================================
 
 APP_NAME = "RockTube Downloader"
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2"
 DEVELOPER = "Mr.Sulim.Inc"
 
 # ------------------------------------------------------------
