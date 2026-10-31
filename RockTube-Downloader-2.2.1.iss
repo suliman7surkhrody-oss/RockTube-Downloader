@@ -1,5 +1,5 @@
 #define MyAppName "RockTube Downloader"
-#define MyAppVersion "2.2.1"
+#define MyAppVersion "2.2.2"
 #define MyAppPublisher "Mr.Sulim.Inc"
 #define MyAppExeName "RockTube Downloader.exe"
 
@@ -12,8 +12,8 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\RockTube Downloader
 DefaultGroupName={#MyAppName}
 
-OutputDir=InstallerOutput-2.2.1
-OutputBaseFilename=RockTube-Downloader-Setup-2.2.1
+OutputDir=InstallerOutput-2.2.2
+OutputBaseFilename=RockTube-Downloader-Setup-2.2.2
 
 SetupIconFile=rocktube.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
@@ -37,7 +37,7 @@ VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
 
 [Files]
-Source: "build-output-2.2.1\RockTube Downloader\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "build-output-2.2.2\RockTube Downloader\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
 Name: "{commondesktop}\RockTube Downloader"; Filename: "{app}\RockTube Downloader.exe"; WorkingDir: "{app}"
